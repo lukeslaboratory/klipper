@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, os, zlib, logging, math
-import serialhdl, pins, chelper, clocksync
+import serialhdl, msgproto, pins, chelper, clocksync
 
 class error(Exception):
     pass
@@ -53,8 +53,8 @@ class MCU_endstop:
             "endstop_query_state oid=%c", cq=cmd_queue)
         self._query_cmd = self._mcu.lookup_query_command(
             "endstop_query_state oid=%c",
-            "endstop_state oid=%c homing=%c pin_value=%c", oid=self._oid,
-            cq=cmd_queue)
+            "endstop_state oid=%c homing=%c next_clock=%u pin_value=%c",
+            oid=self._oid, cq=cmd_queue)
     def home_start(self, print_time, sample_time, sample_count, rest_time,
                    triggered=True):
         clock = self._mcu.print_time_to_clock(print_time)
@@ -415,7 +415,8 @@ class MCU:
         if self._name.startswith('mcu '):
             self._name = self._name[4:]
         # Serial port
-        self._serial = serialhdl.SerialReader(self._reactor)
+        wp = "mcu '%s': " % (self._name)
+        self._serial = serialhdl.SerialReader(self._reactor, warn_prefix=wp)
         self._baud = 0
         self._canbus_iface = None
         canbus_uuid = config.get('canbus_uuid', None)
@@ -547,17 +548,26 @@ class MCU:
             raise error("MCU '%s' CRC does not match config" % (self._name,))
         # Transmit config messages (if needed)
         self.register_response(self._handle_starting, 'starting')
-        if prev_crc is None:
-            logging.info("Sending MCU '%s' printer configuration...",
-                         self._name)
-            for c in self._config_cmds:
+        try:
+            if prev_crc is None:
+                logging.info("Sending MCU '%s' printer configuration...",
+                             self._name)
+                for c in self._config_cmds:
+                    self._serial.send(c)
+            else:
+                for c in self._restart_cmds:
+                    self._serial.send(c)
+            # Transmit init messages
+            for c in self._init_cmds:
                 self._serial.send(c)
-        else:
-            for c in self._restart_cmds:
-                self._serial.send(c)
-        # Transmit init messages
-        for c in self._init_cmds:
-            self._serial.send(c)
+        except msgproto.enumeration_error as e:
+            enum_name, enum_value = e.get_enum_params()
+            if enum_name == 'pin':
+                # Raise pin name errors as a config error (not a protocol error)
+                raise self._printer.config_error(
+                    "Pin '%s' is not a valid pin name on mcu '%s'"
+                    % (enum_value, self._name))
+            raise
     def _send_get_config(self):
         get_config_cmd = self.lookup_query_command(
             "get_config",
@@ -811,7 +821,7 @@ class MCU:
                      self._name, eventtime)
         self._printer.invoke_shutdown("Lost communication with MCU '%s'" % (
             self._name,))
-    def get_status(self, eventtime):
+    def get_status(self, eventtime=None):
         return dict(self._get_status_info)
     def stats(self, eventtime):
         load = "mcu_awake=%.03f mcu_task_avg=%.06f mcu_task_stddev=%.06f" % (
@@ -824,7 +834,7 @@ class MCU:
         return False, '%s: %s' % (self._name, stats)
 
 Common_MCU_errors = {
-    ("Timer too close", "No next step"): """
+    ("Timer too close",): """
 This often indicates the host computer is overloaded. Check
 for other processes consuming excessive CPU time, high swap
 usage, disk errors, overheating, unstable voltage, or

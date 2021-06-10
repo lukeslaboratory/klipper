@@ -36,7 +36,6 @@ class PrinterExtruder:
         self.max_e_accel = config.getfloat(
             'max_extrude_only_accel', max_accel * def_max_extrude_ratio
             , above=0.)
-        self.stepper.set_max_jerk(9999999.9, 9999999.9)
         self.max_e_dist = config.getfloat(
             'max_extrude_only_distance', 50., minval=0.)
         self.instant_corner_v = config.getfloat(
@@ -153,9 +152,7 @@ class PrinterExtruder:
                           1., pressure_advance, 0.,
                           start_v, cruise_v, accel)
     def find_past_position(self, print_time):
-        mcu = self.stepper.get_mcu()
-        clock = mcu.print_time_to_clock(print_time)
-        return self.stepper.get_past_commanded_position(clock)
+        return self.stepper.get_past_commanded_position(print_time)
     def cmd_M104(self, gcmd, wait=False):
         # Set Extruder Temperature
         temp = gcmd.get_float('S', 0.)
